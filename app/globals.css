@@ -1,0 +1,148 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 348 80% 56%; /* #EC3353 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 100% 60%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 348 100% 95%;
+    --accent-foreground: 348 80% 45%;
+    --destructive: 0 100% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 348 80% 56%;
+    --radius: 0.5rem;
+
+    /* Sidebar theme */
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-muted: 0 0% 96%;
+    --sidebar-muted-foreground: 0 0% 45%;
+    --sidebar-accent: 348 100% 95%;
+    --sidebar-accent-foreground: 348 80% 45%;
+    --sidebar-ring: 348 80% 56%;
+    --sidebar-primary: 348 80% 56%;
+    --sidebar-primary-foreground: 0 0% 100%;
+  }
+
+  .dark {
+    --background: 0 0% 10%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 15%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 15%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 348 80% 56%; /* #EC3353 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 100% 60%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 348 80% 30%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 100% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 25%;
+    --input: 0 0% 25%;
+    --ring: 348 80% 56%;
+
+    /* Sidebar theme */
+    --sidebar-background: 0 0% 15%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-border: 0 0% 25%;
+    --sidebar-muted: 0 0% 20%;
+    --sidebar-muted-foreground: 0 0% 65%;
+    --sidebar-accent: 348 80% 30%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-ring: 348 80% 56%;
+    --sidebar-primary: 348 80% 56%;
+    --sidebar-primary-foreground: 0 0% 100%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom styles for the app */
+.krush-gradient {
+  background: linear-gradient(135deg, #ec3353 0%, #ff6b84 100%);
+}
+
+.krush-logo {
+  height: 40px;
+  width: auto;
+}
+
+/* Fix for theme toggle */
+html.dark {
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+}
+
+/* Message animations */
+@keyframes message-appear {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-animation {
+  animation: message-appear 0.3s ease-out forwards;
+}
+
+/* Typing indicator animation */
+@keyframes typing-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.typing-dot {
+  animation: typing-bounce 1s infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 640px) {
+  .mobile-hidden {
+    display: none;
+  }
+}

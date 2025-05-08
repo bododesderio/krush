@@ -1,23 +1,23 @@
 import { redirect } from "next/navigation"
-import { getServerSession } from "next-auth"
-import { authOptions } from "@/lib/auth-options"
 import { ChatLayout } from "@/components/chat-layout"
-import { getUsers } from "@/lib/users"
 import { getGroups } from "@/lib/groups"
+import { getUser } from "@/lib/auth"
+import { getAllUsers } from "@/lib/auth"
 
 export default async function Home() {
-  const session = await getServerSession(authOptions)
-
-  if (!session || !session.user) {
+  // Get the user from our database using Firebase authentication
+  const currentUser = await getUser()
+  
+  if (!currentUser) {
     redirect("/login")
   }
 
   // Get users and groups
-  const users = await getUsers()
-  const groups = await getGroups(session.user.id)
+  const users = await getAllUsers()
+  const groups = await getGroups(currentUser.id)
 
   // Filter out current user from users list
-  const filteredUsers = users.filter((user) => user.id !== session.user.id)
+  const filteredUsers = users.filter((user: { id: string }) => user.id !== currentUser.id)
 
-  return <ChatLayout currentUser={session.user} users={filteredUsers} groups={groups} />
+  return <ChatLayout currentUser={currentUser} users={filteredUsers} groups={groups} />
 }

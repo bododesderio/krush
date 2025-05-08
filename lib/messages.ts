@@ -1,9 +1,26 @@
 "use server"
 
-import { v4 as uuidv4 } from "uuid"
-import { getRedisClient } from "./redis"
 import { revalidatePath } from "next/cache"
 import { uploadFile } from "./upload"
+import {
+  sendMessage as sendFirebaseMessage,
+  addReaction as addFirebaseReaction
+} from "./firebase-data-service"
+import { db } from "./firebase"
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  orderBy,
+  limit,
+  arrayUnion
+} from "firebase/firestore"
+import { database } from "./firebase"
+import { ref, set, get, remove } from "firebase/database"
 
 export type MessageAttachment = {
   type: "image" | "document" | "video" | "audio" | "other"
@@ -19,6 +36,7 @@ export type Message = {
   senderId: string
   receiverId?: string
   groupId?: string
+  chatId?: string
   timestamp: number
   read: boolean
   readBy: string[]
@@ -52,9 +70,6 @@ export async function sendMessage(formData: FormData): Promise<Message> {
     throw new Error("Message must have content or attachments")
   }
 
-  const messageId = uuidv4()
-  const timestamp = Date.now()
-
   // Process file uploads
   const attachments: MessageAttachment[] = []
 
@@ -85,74 +100,35 @@ export async function sendMessage(formData: FormData): Promise<Message> {
     }
   }
 
-  const message: Message = {
-    id: messageId,
+  // Prepare message data
+  const messageData: any = {
     content: content || "",
     senderId,
-    timestamp,
-    read: false,
-    readBy: [senderId], // Sender has read their own message
-    reactions: {},
+    receiverId,
+    groupId,
+    attachments: attachments.length > 0 ? attachments : undefined
   }
 
-  if (receiverId) message.receiverId = receiverId
-  if (groupId) message.groupId = groupId
-  if (attachments.length > 0) message.attachments = attachments
-
-  // Add forwarding information if this is a forwarded message
+  // Add forwarded information if this is a forwarded message
   if (forwardedMessageId && forwardedSenderId && forwardedSenderName) {
-    message.forwarded = {
+    messageData.forwarded = {
       originalMessageId: forwardedMessageId,
       originalSenderId: forwardedSenderId,
       originalSenderName: forwardedSenderName,
     }
   }
 
-  const redis = getRedisClient()
+  // Send message using Firebase
+  const message = await sendFirebaseMessage(messageData)
 
-  // Store message
-  const messageData: Record<string, string> = {
-    content: message.content,
-    senderId: message.senderId,
-    timestamp: message.timestamp.toString(),
-    read: "false",
-    readBy: JSON.stringify(message.readBy),
-    reactions: JSON.stringify(message.reactions || {}),
-  }
+  // Revalidate the chat page
+  revalidatePath("/")
 
-  // Only add these fields if they exist
-  if (message.receiverId) messageData.receiverId = message.receiverId
-  if (message.groupId) messageData.groupId = message.groupId
-  if (message.attachments) messageData.attachments = JSON.stringify(message.attachments)
-  if (message.forwarded) messageData.forwarded = JSON.stringify(message.forwarded)
-
-  try {
-    await redis.hset(`message:${messageId}`, messageData)
-
-    if (groupId) {
-      // Add to group messages
-      await redis.zadd(`group:${groupId}:messages`, timestamp, messageId)
-    } else if (receiverId) {
-      // Add to conversation lists for both users
-      const conversationKey1 = `conversation:${senderId}:${receiverId}`
-      const conversationKey2 = `conversation:${receiverId}:${senderId}`
-
-      await redis.zadd(conversationKey1, timestamp, messageId)
-      await redis.zadd(conversationKey2, timestamp, messageId)
-
-      // Update last message timestamp for conversation
-      await redis.set(`lastMessage:${senderId}:${receiverId}`, timestamp.toString())
-      await redis.set(`lastMessage:${receiverId}:${senderId}`, timestamp.toString())
-    }
-
-    // Revalidate the chat page
-    revalidatePath("/")
-
-    return message
-  } catch (error) {
-    console.error("Error sending message:", error)
-    throw new Error("Failed to send message")
-  }
+  return {
+    ...message,
+    receiverId: message.receiverId || undefined,
+    groupId: message.groupId || undefined
+  } as Message
 }
 
 export async function getFileType(mimeType: string): Promise<"image" | "document" | "video" | "audio" | "other"> {
@@ -179,14 +155,15 @@ export async function forwardMessage(
   targetId: string,
   isGroup: boolean,
 ): Promise<Message> {
-  const redis = getRedisClient()
-
   // Get the original message
-  const messageData = await redis.hgetall(`message:${messageId}`)
+  const messageRef = doc(db, "messages", messageId)
+  const messageDoc = await getDoc(messageRef)
 
-  if (!messageData || Object.keys(messageData).length === 0) {
+  if (!messageDoc.exists()) {
     throw new Error("Message not found")
   }
+
+  const messageData = messageDoc.data()
 
   // Create form data for the new message
   const formData = new FormData()
@@ -204,161 +181,151 @@ export async function forwardMessage(
   formData.append("forwardedSenderId", messageData.senderId)
 
   // Get the original sender's name
-  const senderData = await redis.hgetall(`user:${messageData.senderId}`)
-  const senderName = senderData && senderData.name ? senderData.name : "Unknown User"
+  const senderRef = doc(db, "users", messageData.senderId)
+  const senderDoc = await getDoc(senderRef)
+  const senderName = senderDoc.exists() ?
+    (senderDoc.data().displayName || senderDoc.data().name || "Unknown User") :
+    "Unknown User"
+
   formData.append("forwardedSenderName", senderName)
 
   // Send the forwarded message
   return sendMessage(formData)
 }
 
-export async function getMessages(userId1: string, userId2: string, limit = 50): Promise<Message[]> {
-  const redis = getRedisClient()
-  const conversationKey = `conversation:${userId1}:${userId2}`
-
+export async function getMessages(userId1: string, userId2: string, messageLimit = 50): Promise<Message[]> {
   try {
-    // Get message IDs sorted by timestamp (newest first)
-    const messageIds = await redis.zrange(conversationKey, 0, limit - 1, {
-      rev: true,
-    })
+    // Create a chat ID by sorting and joining user IDs
+    const chatId = [userId1, userId2].sort().join("_");
 
-    const messages: Message[] = []
+    // Check if we have messages in Firestore
+    const messagesRef = collection(db, "messages");
+    const q = query(
+      messagesRef,
+      where("chatId", "==", chatId),
+      orderBy("timestamp", "desc"),
+      limit(messageLimit)
+    );
 
-    for (const messageId of messageIds) {
-      const messageData = await redis.hgetall(`message:${messageId}`)
+    const querySnapshot = await getDocs(q);
+    const messages: Message[] = [];
 
-      if (messageData && Object.keys(messageData).length > 0) {
-        try {
-          const readBy = messageData.readBy ? JSON.parse(messageData.readBy) : []
-          const reactions = messageData.reactions ? JSON.parse(messageData.reactions) : {}
-          const attachments = messageData.attachments ? JSON.parse(messageData.attachments) : undefined
-          const forwarded = messageData.forwarded ? JSON.parse(messageData.forwarded) : undefined
-
-          messages.push({
-            id: messageId,
-            content: messageData.content,
-            senderId: messageData.senderId,
-            receiverId: messageData.receiverId,
-            groupId: messageData.groupId,
-            timestamp: Number.parseInt(messageData.timestamp),
-            read: messageData.read === "true",
-            readBy,
-            reactions,
-            attachments,
-            forwarded,
-          })
-        } catch (error) {
-          console.error("Error parsing message data:", error)
-        }
-      }
-    }
+    querySnapshot.forEach((doc) => {
+      const data = doc.data();
+      messages.push({
+        id: doc.id,
+        content: data.content || "",
+        senderId: data.senderId,
+        receiverId: data.receiverId || undefined,
+        groupId: data.groupId || undefined,
+        chatId: data.chatId,
+        timestamp: data.timestamp ?
+          (typeof data.timestamp === 'number' ?
+            data.timestamp :
+            data.timestamp.toMillis ?
+              data.timestamp.toMillis() :
+              Date.now()) :
+          Date.now(),
+        read: data.read || false,
+        readBy: data.readBy || [data.senderId],
+        reactions: data.reactions || {},
+        attachments: data.attachments || [],
+        forwarded: data.forwarded
+      });
+    });
 
     // Mark messages as read
     for (const message of messages) {
       if (message.receiverId === userId1 && !message.readBy.includes(userId1)) {
-        const updatedReadBy = [...message.readBy, userId1]
-        await redis.hset(`message:${message.id}`, {
-          read: updatedReadBy.includes(message.receiverId || "") ? "true" : "false",
-          readBy: JSON.stringify(updatedReadBy),
-        })
-      }
-    }
-
-    return messages
-  } catch (error) {
-    console.error("Error getting messages:", error)
-    return []
-  }
-}
-
-export async function getGroupMessages(groupId: string, limit = 50): Promise<Message[]> {
-  const redis = getRedisClient()
-  const messagesKey = `group:${groupId}:messages`
-
-  try {
-    // Get message IDs sorted by timestamp (newest first)
-    const messageIds = await redis.zrange(messagesKey, 0, limit - 1, {
-      rev: true,
-    })
-
-    const messages: Message[] = []
-
-    for (const messageId of messageIds) {
-      const messageData = await redis.hgetall(`message:${messageId}`)
-
-      if (messageData && Object.keys(messageData).length > 0) {
         try {
-          const readBy = messageData.readBy ? JSON.parse(messageData.readBy) : []
-          const reactions = messageData.reactions ? JSON.parse(messageData.reactions) : {}
-          const attachments = messageData.attachments ? JSON.parse(messageData.attachments) : undefined
-          const forwarded = messageData.forwarded ? JSON.parse(messageData.forwarded) : undefined
-
-          messages.push({
-            id: messageId,
-            content: messageData.content,
-            senderId: messageData.senderId,
-            receiverId: messageData.receiverId,
-            groupId: messageData.groupId,
-            timestamp: Number.parseInt(messageData.timestamp),
-            read: messageData.read === "true",
-            readBy,
-            reactions,
-            attachments,
-            forwarded,
-          })
+          await markMessageAsRead(message.id, userId1);
         } catch (error) {
-          console.error("Error parsing message data:", error)
+          console.error("Error marking message as read:", error);
         }
       }
     }
 
-    return messages
+    return messages;
   } catch (error) {
-    console.error("Error getting group messages:", error)
-    return []
+    console.error("Error getting messages:", error);
+    // Return empty array instead of throwing
+    return [];
+  }
+}
+
+export async function getGroupMessages(groupId: string, messageLimit = 50): Promise<Message[]> {
+  try {
+    // Query messages for this group
+    const messagesRef = collection(db, "messages");
+    const q = query(
+      messagesRef,
+      where("groupId", "==", groupId),
+      orderBy("timestamp", "desc"),
+      limit(messageLimit)
+    );
+
+    const querySnapshot = await getDocs(q);
+    const messages: Message[] = [];
+
+    querySnapshot.forEach((doc) => {
+      const data = doc.data();
+      messages.push({
+        id: doc.id,
+        content: data.content || "",
+        senderId: data.senderId,
+        receiverId: data.receiverId || undefined,
+        groupId: data.groupId || undefined,
+        chatId: data.chatId,
+        timestamp: data.timestamp ?
+          (typeof data.timestamp === 'number' ?
+            data.timestamp :
+            data.timestamp.toMillis ?
+              data.timestamp.toMillis() :
+              Date.now()) :
+          Date.now(),
+        read: data.read || false,
+        readBy: data.readBy || [data.senderId],
+        reactions: data.reactions || {},
+        attachments: data.attachments || [],
+        forwarded: data.forwarded
+      });
+    });
+
+    return messages;
+  } catch (error) {
+    console.error("Error getting group messages:", error);
+    return [];
   }
 }
 
 export async function markMessageAsRead(messageId: string, userId: string): Promise<void> {
-  const redis = getRedisClient()
-  const messageData = await redis.hgetall(`message:${messageId}`)
-
-  if (!messageData || Object.keys(messageData).length === 0) {
-    throw new Error("Message not found")
-  }
-
   try {
-    const readBy = JSON.parse(messageData.readBy || "[]")
+    const messageRef = doc(db, "messages", messageId);
+    const messageDoc = await getDoc(messageRef);
+
+    if (!messageDoc.exists()) {
+      console.warn(`Message ${messageId} not found`);
+      return;
+    }
+
+    const data = messageDoc.data();
+    const readBy = data.readBy || [];
 
     if (!readBy.includes(userId)) {
-      const updatedReadBy = [...readBy, userId]
-      await redis.hset(`message:${messageId}`, {
-        read: messageData.receiverId === userId ? "true" : messageData.read,
-        readBy: JSON.stringify(updatedReadBy),
-      })
+      await updateDoc(messageRef, {
+        read: true,
+        readBy: arrayUnion(userId)
+      });
     }
   } catch (error) {
-    console.error("Error marking message as read:", error)
+    console.error("Error marking message as read:", error);
+    // Don't throw, just log
   }
 }
 
 export async function addReaction(messageId: string, userId: string, reaction: string) {
-  const redis = getRedisClient()
-
-  const messageData = await redis.hgetall(`message:${messageId}`)
-
-  if (!messageData || Object.keys(messageData).length === 0) {
-    throw new Error("Message not found")
-  }
-
   try {
-    const reactions = JSON.parse(messageData.reactions || "{}")
-    reactions[userId] = reaction
-
-    await redis.hset(`message:${messageId}`, {
-      reactions: JSON.stringify(reactions),
-    })
-
+    await addFirebaseReaction(messageId, userId, reaction)
     revalidatePath("/")
   } catch (error) {
     console.error("Error adding reaction:", error)
@@ -368,16 +335,17 @@ export async function addReaction(messageId: string, userId: string, reaction: s
 
 export async function setTypingStatus(userId: string, receiverId: string, isTyping: boolean) {
   try {
-    const redis = getRedisClient()
+    const typingRef = ref(database, `typing/${userId}_${receiverId}`)
 
     if (isTyping) {
-      // Set typing status with expiration (5 seconds)
-      await redis.set(`typing:${userId}:${receiverId}`, "true", {
-        ex: 5,
+      // Set typing status with expiration (will be handled by client-side code)
+      await set(typingRef, {
+        isTyping: true,
+        timestamp: Date.now()
       })
     } else {
       // Clear typing status
-      await redis.del(`typing:${userId}:${receiverId}`)
+      await remove(typingRef)
     }
   } catch (error) {
     console.error("Error setting typing status:", error)
@@ -387,10 +355,17 @@ export async function setTypingStatus(userId: string, receiverId: string, isTypi
 
 export async function getTypingStatus(userId: string, receiverId: string): Promise<boolean> {
   try {
-    const redis = getRedisClient()
-    const isTyping = await redis.get(`typing:${receiverId}:${userId}`)
+    const typingRef = ref(database, `typing/${receiverId}_${userId}`)
+    const snapshot = await get(typingRef)
 
-    return isTyping === "true"
+    if (snapshot.exists()) {
+      const data = snapshot.val()
+      // Check if typing status is recent (within last 5 seconds)
+      const isRecent = Date.now() - data.timestamp < 5000
+      return data.isTyping && isRecent
+    }
+
+    return false
   } catch (error) {
     console.error("Error getting typing status:", error)
     return false
@@ -399,16 +374,17 @@ export async function getTypingStatus(userId: string, receiverId: string): Promi
 
 export async function setGroupTypingStatus(userId: string, groupId: string, isTyping: boolean) {
   try {
-    const redis = getRedisClient()
+    const typingRef = ref(database, `typing/group/${groupId}/${userId}`)
 
     if (isTyping) {
-      // Set typing status with expiration (5 seconds)
-      await redis.set(`typing:group:${userId}:${groupId}`, "true", {
-        ex: 5,
+      // Set typing status with expiration (will be handled by client-side code)
+      await set(typingRef, {
+        isTyping: true,
+        timestamp: Date.now()
       })
     } else {
       // Clear typing status
-      await redis.del(`typing:group:${userId}:${groupId}`)
+      await remove(typingRef)
     }
   } catch (error) {
     console.error("Error setting group typing status:", error)
@@ -418,19 +394,24 @@ export async function setGroupTypingStatus(userId: string, groupId: string, isTy
 
 export async function getGroupTypingUsers(groupId: string, currentUserId: string): Promise<string[]> {
   try {
-    const redis = getRedisClient()
-    const keys = await redis.keys(`typing:group:*:${groupId}`)
+    const typingRef = ref(database, `typing/group/${groupId}`)
+    const snapshot = await get(typingRef)
 
     const typingUsers: string[] = []
 
-    for (const key of keys) {
-      const userId = key.split(":")[2]
-      if (userId !== currentUserId) {
-        const isTyping = await redis.get(key)
-        if (isTyping === "true") {
-          typingUsers.push(userId)
+    if (snapshot.exists()) {
+      const data = snapshot.val()
+
+      Object.keys(data).forEach(userId => {
+        if (userId !== currentUserId) {
+          const userTyping = data[userId]
+          // Check if typing status is recent (within last 5 seconds)
+          const isRecent = Date.now() - userTyping.timestamp < 5000
+          if (userTyping.isTyping && isRecent) {
+            typingUsers.push(userId)
+          }
         }
-      }
+      })
     }
 
     return typingUsers

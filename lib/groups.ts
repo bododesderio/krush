@@ -1,9 +1,26 @@
 "use server"
 
-import { v4 as uuidv4 } from "uuid"
-import { getRedisClient } from "./redis"
 import { revalidatePath } from "next/cache"
 import type { User } from "./auth"
+import {
+  createGroup as createFirebaseGroup,
+  getGroup as getFirebaseGroup,
+  getUserGroups as getFirebaseUserGroups,
+  addMemberToGroup as addFirebaseMemberToGroup,
+  getGroupMembers as getFirebaseGroupMembers
+} from "./firebase-data-service"
+import { db } from "./firebase"
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  arrayRemove,
+  collection,
+  query,
+  where,
+  getDocs
+} from "firebase/firestore"
 
 export type Group = {
   id: string
@@ -28,102 +45,52 @@ export async function createGroup(formData: FormData): Promise<Group> {
     members.push(createdBy)
   }
 
-  const groupId = uuidv4()
-  const timestamp = Date.now()
   const avatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`
 
-  const group: Group = {
-    id: groupId,
+  // Create group in Firebase
+  const group = await createFirebaseGroup({
     name,
     avatar,
     createdBy,
-    createdAt: timestamp,
-    members,
-  }
-
-  const redis = getRedisClient()
-
-  // Store group data
-  await redis.hset(`group:${groupId}`, {
-    name,
-    avatar,
-    createdBy,
-    createdAt: timestamp,
-    members: JSON.stringify(members),
+    members
   })
-
-  // Add to groups list
-  await redis.sadd("groups", groupId)
-
-  // Add group to each member's groups
-  for (const memberId of members) {
-    await redis.sadd(`user:${memberId}:groups`, groupId)
-  }
 
   revalidatePath("/")
   return group
 }
 
 export async function getGroup(groupId: string): Promise<Group | null> {
-  const redis = getRedisClient()
-  const groupData = await redis.hgetall(`group:${groupId}`)
-
-  if (!groupData || Object.keys(groupData).length === 0) {
-    return null
-  }
+  const group = await getFirebaseGroup(groupId)
+  if (!group) return null
 
   return {
-    id: groupId,
-    name: groupData.name,
-    avatar: groupData.avatar,
-    createdBy: groupData.createdBy,
-    createdAt: Number.parseInt(groupData.createdAt),
-    members: JSON.parse(groupData.members),
-  }
+    ...group,
+    createdAt: typeof group.createdAt === 'number' ?
+      group.createdAt :
+      await Promise.resolve(group.createdAt)
+  } as Group
 }
 
 export async function getUserGroups(userId: string): Promise<Group[]> {
-  const redis = getRedisClient()
-  const groupIds = await redis.smembers(`user:${userId}:groups`)
+  const groups = await getFirebaseUserGroups(userId)
 
-  const groups: Group[] = []
-
-  for (const groupId of groupIds) {
-    const group = await getGroup(groupId)
-    if (group) {
-      groups.push(group)
-    }
-  }
-
-  return groups
+  return Promise.all(groups.map(async (group) => ({
+    ...group,
+    createdAt: typeof group.createdAt === 'number' ?
+      group.createdAt :
+      await Promise.resolve(group.createdAt)
+  }))) as Promise<Group[]>
 }
 
+// Alias for getUserGroups to match the import in app/page.tsx
+export const getGroups = getUserGroups;
+
 export async function addMemberToGroup(groupId: string, userId: string): Promise<void> {
-  const redis = getRedisClient()
-  const group = await getGroup(groupId)
-
-  if (!group) {
-    throw new Error("Group not found")
-  }
-
-  if (group.members.includes(userId)) {
-    return // User is already a member
-  }
-
-  // Add user to group members
-  const updatedMembers = [...group.members, userId]
-  await redis.hset(`group:${groupId}`, {
-    members: JSON.stringify(updatedMembers),
-  })
-
-  // Add group to user's groups
-  await redis.sadd(`user:${userId}:groups`, groupId)
-
+  await addFirebaseMemberToGroup(groupId, userId)
   revalidatePath("/")
 }
 
 export async function removeMemberFromGroup(groupId: string, userId: string): Promise<void> {
-  const redis = getRedisClient()
   const group = await getGroup(groupId)
 
   if (!group) {
@@ -135,19 +102,25 @@ export async function removeMemberFromGroup(groupId: string, userId: string): Pr
   }
 
   // Remove user from group members
-  const updatedMembers = group.members.filter((id) => id !== userId)
-  await redis.hset(`group:${groupId}`, {
-    members: JSON.stringify(updatedMembers),
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    members: arrayRemove(userId)
   })
 
   // Remove group from user's groups
-  await redis.srem(`user:${userId}:groups`, groupId)
+  const userRef = doc(db, "users", userId)
+  const userDoc = await getDoc(userRef)
+
+  if (userDoc.exists()) {
+    await updateDoc(userRef, {
+      groups: arrayRemove(groupId)
+    })
+  }
 
   revalidatePath("/")
 }
 
 export async function deleteGroup(groupId: string): Promise<void> {
-  const redis = getRedisClient()
   const group = await getGroup(groupId)
 
   if (!group) {
@@ -156,48 +129,31 @@ export async function deleteGroup(groupId: string): Promise<void> {
 
   // Remove group from each member's groups
   for (const memberId of group.members) {
-    await redis.srem(`user:${memberId}:groups`, groupId)
+    const userRef = doc(db, "users", memberId)
+    const userDoc = await getDoc(userRef)
+
+    if (userDoc.exists()) {
+      await updateDoc(userRef, {
+        groups: arrayRemove(groupId)
+      })
+    }
   }
 
   // Delete group messages
-  const messageIds = await redis.zrange(`group:${groupId}:messages`, 0, -1)
-  for (const messageId of messageIds) {
-    await redis.del(`message:${messageId}`)
+  const messagesRef = collection(db, "messages")
+  const q = query(messagesRef, where("groupId", "==", groupId))
+  const messagesSnapshot = await getDocs(q)
+
+  for (const messageDoc of messagesSnapshot.docs) {
+    await deleteDoc(doc(db, "messages", messageDoc.id))
   }
-  await redis.del(`group:${groupId}:messages`)
 
   // Delete group data
-  await redis.del(`group:${groupId}`)
-
-  // Remove from groups list
-  await redis.srem("groups", groupId)
+  await deleteDoc(doc(db, "groups", groupId))
 
   revalidatePath("/")
 }
 
 export async function getGroupMembers(groupId: string): Promise<User[]> {
-  const redis = getRedisClient()
-  const group = await getGroup(groupId)
-
-  if (!group) {
-    throw new Error("Group not found")
-  }
-
-  const members: User[] = []
-
-  for (const memberId of group.members) {
-    const userData = await redis.hgetall(`user:${memberId}`)
-
-    if (userData && Object.keys(userData).length > 0) {
-      members.push({
-        id: memberId,
-        name: userData.name,
-        avatar: userData.avatar,
-        online: userData.online === "true",
-        lastSeen: userData.lastSeen ? Number.parseInt(userData.lastSeen) : undefined,
-      })
-    }
-  }
-
-  return members
+  return await getFirebaseGroupMembers(groupId)
 }

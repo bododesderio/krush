@@ -11,29 +11,87 @@ import {
   serverTimestamp,
 } from "firebase/firestore"
 import { ref, onValue, set, onDisconnect } from "firebase/database"
-import type { Message, Chat } from "./chat-service"
+// Define our own Message type to avoid conflicts
+export interface RealtimeMessage {
+  id: string
+  text: string
+  content?: string
+  senderId: string
+  receiverId?: string
+  groupId?: string
+  chatId?: string
+  timestamp: any
+  read: boolean
+  readBy: string[]
+  reactions: Record<string, string>
+  attachments?: any[]
+  forwarded?: any
+}
+
+import type { Chat } from "./chat-service"
 
 // Real-time chat messages listener
-export function listenToMessages(chatId: string, callback: (messages: Message[]) => void) {
-  const messagesRef = collection(db, "chats", chatId, "messages")
-  const q = query(messagesRef, orderBy("timestamp", "desc"), limit(50))
+export function listenToMessages(chatId: string, callback: (messages: RealtimeMessage[]) => void) {
+  // Query messages collection directly
+  const messagesRef = collection(db, "messages")
+
+  // Determine if this is a group chat or direct chat
+  const isGroupChat = !chatId.includes("_")
+
+  // Create appropriate query based on chat type
+  let q;
+  if (isGroupChat) {
+    // For group messages, use groupId field
+    console.log("Creating group chat query for groupId:", chatId)
+    q = query(
+      messagesRef,
+      where("groupId", "==", chatId),
+      orderBy("timestamp", "desc"),
+      limit(50)
+    )
+  } else {
+    // For direct messages, use chatId field
+    console.log("Creating direct chat query for chatId:", chatId)
+    q = query(
+      messagesRef,
+      where("chatId", "==", chatId),
+      orderBy("timestamp", "desc"),
+      limit(50)
+    )
+  }
 
   return onSnapshot(q, (snapshot) => {
-    const messages: Message[] = []
+    const messages: RealtimeMessage[] = []
     snapshot.forEach((doc) => {
       const data = doc.data()
       messages.push({
         id: doc.id,
-        text: data.text,
+        text: data.content || "", // Map content to text for compatibility
+        content: data.content || "",
         senderId: data.senderId,
-        timestamp: data.timestamp,
-        read: data.read,
+        timestamp: data.timestamp ?
+          (typeof data.timestamp === 'number' ?
+            data.timestamp :
+            data.timestamp.toMillis ?
+              data.timestamp.toMillis() :
+              Date.now()) :
+          Date.now(),
+        read: data.read || false,
         readBy: data.readBy || [],
         reactions: data.reactions || {},
-        attachments: data.attachments,
+        attachments: data.attachments || [],
         forwarded: data.forwarded,
       })
     })
+
+    // Sort messages by timestamp (newest first)
+    messages.sort((a, b) => {
+      const timestampA = typeof a.timestamp === 'number' ? a.timestamp : 0
+      const timestampB = typeof b.timestamp === 'number' ? b.timestamp : 0
+      return timestampB - timestampA
+    })
+
+    console.log("Realtime messages update:", messages)
     callback(messages)
   })
 }

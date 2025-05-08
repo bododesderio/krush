@@ -2,6 +2,11 @@
 
 import { useRef, useEffect } from "react"
 import { type Message, addReaction } from "@/lib/messages"
+
+// Extended Message type to handle both formats
+interface ExtendedMessage extends Message {
+  text?: string
+}
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -15,7 +20,7 @@ import type { User } from "@/lib/auth"
 import type { Group } from "@/lib/groups"
 
 interface MessageListProps {
-  messages: Message[]
+  messages: ExtendedMessage[]
   currentUserId: string
   isLoading: boolean
   isTyping: boolean
@@ -41,6 +46,9 @@ export function MessageList({
   // Scroll to bottom when messages change
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+
+    // Debug messages
+    console.log("MessageList received messages:", messages)
   }, [messages])
 
   async function handleAddReaction(messageId: string, reaction: string) {
@@ -58,8 +66,6 @@ export function MessageList({
 
   // Check if a message is a voice message
   const isVoiceMessage = (message: Message) => {
-    return message.attachments?.some(att => \
-      att.type === "audio\" && att.name.includes  => {
     return message.attachments?.some((att) => att.type === "audio" && att.name.includes("voice-message"))
   }
 
@@ -152,7 +158,7 @@ export function MessageList({
                       )}
 
                       {/* Message content */}
-                      {message.content && <p>{message.content}</p>}
+                      {(message.content || message.text) && <p>{message.content || message.text}</p>}
 
                       <div className="absolute top-2 right-2">
                         <MessageActionMenu

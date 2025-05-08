@@ -7,9 +7,10 @@ import type { Group } from "@/lib/groups"
 import { type Message, getMessages, getGroupMessages, sendMessage } from "@/lib/messages"
 import { MessageList } from "@/components/message-list"
 import { MessageInput } from "@/components/message-input"
-import { listenToMessages } from "@/lib/firebase-realtime"
+import { listenToMessages, type RealtimeMessage } from "@/lib/firebase-realtime"
 import { setTypingStatus, listenToTypingStatus } from "@/lib/typing-service"
 import { setupMessageListener } from "@/lib/notification-service"
+import { useFirebaseMessaging } from "@/lib/firebase-messaging-init"
 import { useToast } from "@/components/ui/use-toast"
 
 interface ChatContainerProps {
@@ -26,6 +27,9 @@ export function ChatContainer({ currentUser, users, groups }: ChatContainerProps
   const [isLoading, setIsLoading] = useState(false)
   const [typingUsers, setTypingUsers] = useState<string[]>([])
   const { toast } = useToast()
+
+  // Initialize Firebase messaging for notifications
+  useFirebaseMessaging(currentUser.id)
 
   // Initial message fetch
   useEffect(() => {
@@ -46,6 +50,14 @@ export function ChatContainer({ currentUser, users, groups }: ChatContainerProps
         }
       } catch (error) {
         console.error("Failed to fetch messages:", error)
+        // Show error toast
+        toast({
+          title: "Error",
+          description: "Failed to load messages. Please try again.",
+          variant: "destructive",
+        })
+        // Set empty messages array to prevent UI from breaking
+        setMessages([])
       } finally {
         setIsLoading(false)
       }
@@ -58,12 +70,42 @@ export function ChatContainer({ currentUser, users, groups }: ChatContainerProps
   useEffect(() => {
     if (!selectedUserId && !selectedGroupId) return () => {}
 
-    const chatId = selectedGroupId || (selectedUserId && `${[currentUser.id, selectedUserId].sort().join("_")}`)
+    // Create chatId for direct messages
+    const chatId = selectedUserId ?
+      [currentUser.id, selectedUserId].sort().join("_") :
+      selectedGroupId
 
     if (!chatId) return () => {}
 
+    console.log("Setting up real-time message listener for chatId:", chatId)
+
     return listenToMessages(chatId, (newMessages) => {
-      setMessages(newMessages)
+      console.log("Received new messages:", newMessages)
+
+      // Convert RealtimeMessage to Message with text property
+      const convertedMessages = newMessages.map((message) => ({
+        id: message.id,
+        content: message.content || message.text || "",
+        text: message.text || message.content || "",
+        senderId: message.senderId,
+        receiverId: message.receiverId,
+        groupId: message.groupId,
+        chatId: message.chatId,
+        timestamp: message.timestamp,
+        read: message.read,
+        readBy: message.readBy || [],
+        reactions: message.reactions || {},
+        attachments: message.attachments || [],
+        forwarded: message.forwarded
+          ? {
+              originalMessageId: message.forwarded.originalMessageId || "",
+              originalSenderId: message.forwarded.originalSenderId || "",
+              originalSenderName: message.forwarded.originalSenderName || "Unknown",
+            }
+          : undefined,
+      }))
+
+      setMessages(convertedMessages)
     })
   }, [currentUser.id, selectedUserId, selectedGroupId])
 
@@ -145,10 +187,7 @@ export function ChatContainer({ currentUser, users, groups }: ChatContainerProps
     }
   }
 
-  // Get the selected user or group
-  const selectedUser = selectedUserId ? users.find((user) => user.id === selectedUserId) : null
-  const selectedGroup = selectedGroupId ? groups.find((group) => group.id === selectedGroupId) : null
-
+  // Check if a chat is selected
   if (!selectedUserId && !selectedGroupId) {
     return (
       <div className="flex-1 flex items-center justify-center bg-muted dark:bg-background">

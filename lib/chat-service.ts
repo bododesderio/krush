@@ -14,6 +14,7 @@ import {
   arrayRemove,
   deleteDoc,
   getDocs,
+  writeBatch
 } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
 import { ref as databaseRef, set, onValue, remove } from "firebase/database"
@@ -330,7 +331,7 @@ export async function deleteChat(chatId: string) {
   try {
     // Delete all messages
     const messagesSnapshot = await getDocs(collection(db, "chats", chatId, "messages"))
-    const batch = db.batch()
+    const batch = writeBatch(db)
 
     messagesSnapshot.forEach((doc) => {
       batch.delete(doc.ref)

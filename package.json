@@ -59,17 +59,13 @@
     "vaul": "^0.9.6",
     "zod": "^3.24.1",
     "chart.js": "latest",
-    "@auth/core": "latest",
-    "nodemailer": "latest",
-    "@upstash/redis": "latest",
     "uuid": "latest",
     "react-chartjs-2": "latest",
     "bcryptjs": "latest",
     "firebase": "latest",
     "@vercel/blob": "latest",
     "nanoid": "latest",
-    "firebase-admin": "latest",
-    "next-auth": "latest"
+    "firebase-admin": "latest"
   },
   "devDependencies": {
     "@types/node": "^22",

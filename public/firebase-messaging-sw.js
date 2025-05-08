@@ -1,30 +1,39 @@
 // Give the service worker access to Firebase Messaging.
 // Note that you can only use Firebase Messaging here. Other Firebase libraries
 // are not available in the service worker.
-importScripts("https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js")
-importScripts("https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js")
+importScripts("https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js");
+importScripts("https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js");
 
-// Initialize the Firebase app in the service worker by passing in
-// your app's Firebase config object.
-// https://firebase.google.com/docs/web/setup#config-object
+// Hardcoded Firebase configuration
+// This is safe to include in the service worker as these values are public
 const firebaseConfig = {
-  apiKey: self.FIREBASE_API_KEY,
-  authDomain: self.FIREBASE_AUTH_DOMAIN,
-  projectId: self.FIREBASE_PROJECT_ID,
-  storageBucket: self.FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: self.FIREBASE_MESSAGING_SENDER_ID,
-  appId: self.FIREBASE_APP_ID,
-  measurementId: self.FIREBASE_MEASUREMENT_ID,
-}
+  apiKey: "AIzaSyBXZMhL3aul1_5mKVM5055AvW1hlfOfEt4",
+  authDomain: "krush-aa94a.firebaseapp.com",
+  projectId: "krush-aa94a",
+  storageBucket: "krush-aa94a.firebasestorage.app",
+  messagingSenderId: "763372281253",
+  appId: "1:763372281253:web:77bf827b1bac9b92ae9c4c",
+  measurementId: "G-DS1K87PBFE",
+  databaseURL: "https://krush-aa94a-default-rtdb.firebaseio.com/"
+};
 
-firebase.initializeApp(firebaseConfig)
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
 
 // Retrieve an instance of Firebase Messaging so that it can handle background
 // messages.
-const messaging = firebase.messaging()
+// Initialize Firebase messaging
+let messaging;
+try {
+  messaging = firebase.messaging();
+  console.log('Firebase messaging initialized in service worker');
+} catch (error) {
+  console.error('Error initializing Firebase messaging in service worker:', error);
+}
 
 // Handle background messages
-messaging.onBackgroundMessage((payload) => {
+if (messaging) {
+  messaging.onBackgroundMessage((payload) => {
   console.log("[firebase-messaging-sw.js] Received background message ", payload)
 
   const notificationTitle = payload.notification.title
@@ -36,7 +45,8 @@ messaging.onBackgroundMessage((payload) => {
   }
 
   self.registration.showNotification(notificationTitle, notificationOptions)
-})
+  })
+}
 
 // Handle notification click
 self.addEventListener("notificationclick", (event) => {

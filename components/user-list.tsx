@@ -155,7 +155,13 @@ export function UserList({ currentUser, users, groups }: UserListProps) {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{user.name}</p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                    {user.online ? "Online" : user.lastSeen ? `Last seen ${formatLastSeen(user.lastSeen)}` : "Offline"}
+                    {user.online 
+                      ? "Online" 
+                      : user.lastSeen 
+                        ? typeof user.lastSeen === 'number'
+                          ? `Last seen ${formatLastSeen(user.lastSeen)}`
+                          : "Offline"
+                        : "Offline"}
                   </p>
                 </div>
               </button>

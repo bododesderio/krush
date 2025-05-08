@@ -49,7 +49,7 @@ export async function POST(request: Request) {
       tokens: tokens,
     }
 
-    const response = await messaging.sendMulticast(message)
+    const response = await messaging.sendEachForMulticast(message)
 
     return NextResponse.json({
       success: true,

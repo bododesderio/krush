@@ -17,6 +17,7 @@ import {
 import { auth, googleProvider, db } from "@/lib/firebase"
 import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore"
 import { useRouter } from "next/navigation"
+import { setUserCookie } from "@/lib/auth"
 
 type User = {
   uid: string
@@ -65,10 +66,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email, password)
+      const userCredential = await signInWithEmailAndPassword(auth, email, password)
+      const userId = userCredential.user.uid
+      await setUserCookie(userId)
       router.push("/")
     } catch (error: any) {
-      throw new Error(error.message)
+      console.error("Firebase auth error:", error.code, error.message)
+      if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+        throw new Error("Invalid email or password")
+      } else if (error.code === 'auth/user-disabled') {
+        throw new Error("This account has been disabled")
+      } else {
+        throw new Error(error.message || "Failed to sign in")
+      }
     }
   }
 
@@ -102,16 +112,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider)
-      const user = result.user
+      const userCredential = await signInWithPopup(auth, googleProvider)
+      const user = userCredential.user
+      const userId = userCredential.user.uid
+      const userRef = doc(db, "users", user.uid)
 
       // Check if user document exists
       const userDoc = await getDoc(doc(db, "users", user.uid))
 
       if (!userDoc.exists()) {
         // Create user document in Firestore
-        await setDoc(doc(db, "users", user.uid), {
-          uid: user.uid,
+        await setDoc(userRef, {
+          uid: userId,
           email: user.email,
           displayName: user.displayName,
           photoURL: user.photoURL,
@@ -131,6 +143,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           { merge: true },
         )
       }
+
+      // Call the server action to set the cookie
+      await setUserCookie(userId)
 
       router.push("/")
     } catch (error: any) {
@@ -177,7 +192,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           phoneNumber: user.phoneNumber,
           createdAt: serverTimestamp(),
           lastSeen: serverTimestamp(),
-          online: true,
+          online: true, 
         })
       } else {
         // Update last seen

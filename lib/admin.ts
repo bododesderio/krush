@@ -1,169 +1,163 @@
 "use server"
 
-import { getRedisClient } from "./redis"
 import { revalidatePath } from "next/cache"
+import { clearDatabase as clearFirebaseDatabase } from "./firebase-data-service"
+import { db, database } from "./firebase"
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  doc,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  serverTimestamp,
+  Timestamp
+} from "firebase/firestore"
+import * as bcrypt from "bcryptjs"
 
 export async function clearDatabase() {
-  const redis = getRedisClient()
-
-  // Get all user IDs
-  const userIds = await redis.smembers("users")
-
-  // Delete all user data
-  for (const userId of userIds) {
-    await redis.del(`user:${userId}`)
+  try {
+    const result = await clearFirebaseDatabase()
+    revalidatePath("/")
+    return result
+  } catch (error) {
+    console.error("Error clearing database:", error)
+    return { success: false, error: "Failed to clear database" }
   }
-
-  // Delete user sets
-  await redis.del("users")
-  await redis.del("users:emails")
-
-  // Get all group IDs
-  const groupIds = await redis.smembers("groups")
-
-  // Delete all group data
-  for (const groupId of groupIds) {
-    // Delete group messages
-    const messageIds = await redis.zrange(`group:${groupId}:messages`, 0, -1)
-    for (const messageId of messageIds) {
-      await redis.del(`message:${messageId}`)
-    }
-    await redis.del(`group:${groupId}:messages`)
-    await redis.del(`group:${groupId}`)
-  }
-
-  // Delete groups set
-  await redis.del("groups")
-
-  // Delete all messages
-  const messageKeys = await redis.keys("message:*")
-  for (const key of messageKeys) {
-    await redis.del(key)
-  }
-
-  // Delete all conversations
-  const conversationKeys = await redis.keys("conversation:*")
-  for (const key of conversationKeys) {
-    await redis.del(key)
-  }
-
-  // Delete all typing indicators
-  const typingKeys = await redis.keys("typing:*")
-  for (const key of typingKeys) {
-    await redis.del(key)
-  }
-
-  revalidatePath("/")
-  return { success: true }
 }
 
 export async function getUserStats() {
-  const redis = getRedisClient()
+  try {
+    const usersRef = collection(db, "users")
+    const usersSnapshot = await getDocs(usersRef)
 
-  const userIds = await redis.smembers("users")
-  let activeUsers = 0
-  let inactiveUsers = 0
+    let activeUsers = 0
+    let inactiveUsers = 0
+    const totalUsers = usersSnapshot.size
 
-  const now = Date.now()
-  const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000
+    const now = Date.now()
+    const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000
 
-  for (const userId of userIds) {
-    const userData = await redis.hgetall(`user:${userId}`)
-    if (userData && userData.lastSeen) {
-      const lastSeen = Number.parseInt(userData.lastSeen)
-      if (lastSeen > oneWeekAgo) {
-        activeUsers++
+    usersSnapshot.forEach((userDoc) => {
+      const userData = userDoc.data()
+      if (userData.lastSeen) {
+        const lastSeen = userData.lastSeen instanceof Timestamp ?
+          userData.lastSeen.toMillis() :
+          Number(userData.lastSeen)
+
+        if (lastSeen > oneWeekAgo) {
+          activeUsers++
+        } else {
+          inactiveUsers++
+        }
       } else {
         inactiveUsers++
       }
-    } else {
-      inactiveUsers++
-    }
-  }
+    })
 
-  return {
-    totalUsers: userIds.length,
-    activeUsers,
-    inactiveUsers,
+    return {
+      totalUsers,
+      activeUsers,
+      inactiveUsers,
+    }
+  } catch (error) {
+    console.error("Error getting user stats:", error)
+    return {
+      totalUsers: 0,
+      activeUsers: 0,
+      inactiveUsers: 0,
+    }
   }
 }
 
 export async function resetUserPassword(userId: string, newPassword: string) {
-  const redis = getRedisClient()
-  const bcrypt = require("bcryptjs")
+  try {
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10)
 
-  // Hash the new password
-  const hashedPassword = await bcrypt.hash(newPassword, 10)
+    // Update the user's password
+    const userRef = doc(db, "users", userId)
+    await updateDoc(userRef, {
+      password: hashedPassword,
+      updatedAt: serverTimestamp()
+    })
 
-  // Update the user's password
-  await redis.hset(`user:${userId}`, {
-    password: hashedPassword,
-  })
-
-  return { success: true }
+    return { success: true }
+  } catch (error) {
+    console.error("Error resetting password:", error)
+    return { success: false, error: "Failed to reset password" }
+  }
 }
 
 export async function getAllUsersWithStats() {
-  const redis = getRedisClient()
+  try {
+    const usersRef = collection(db, "users")
+    const usersSnapshot = await getDocs(usersRef)
+    const users = []
 
-  const userIds = await redis.smembers("users")
-  const users = []
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data()
+      const userId = userDoc.id
 
-  for (const userId of userIds) {
-    const userData = await redis.hgetall(`user:${userId}`)
-    if (userData && Object.keys(userData).length > 0) {
       // Get message count
-      const sentMessageKeys = await redis.keys(`conversation:${userId}:*`)
-      let messageCount = 0
-
-      for (const key of sentMessageKeys) {
-        const count = await redis.zcard(key)
-        messageCount += count
-      }
+      const messagesRef = collection(db, "messages")
+      const q = query(messagesRef, where("senderId", "==", userId))
+      const messagesSnapshot = await getDocs(q)
+      const messageCount = messagesSnapshot.size
 
       // Get last active time
-      const lastSeen = userData.lastSeen ? Number.parseInt(userData.lastSeen) : 0
-      const lastActive = new Date(lastSeen).toISOString()
+      let lastActive = new Date().toISOString()
+      if (userData.lastSeen) {
+        const lastSeen = userData.lastSeen instanceof Timestamp ?
+          userData.lastSeen.toMillis() :
+          Number(userData.lastSeen)
+        lastActive = new Date(lastSeen).toISOString()
+      }
 
       users.push({
         id: userId,
-        email: userData.email,
-        name: userData.name,
-        avatar: userData.avatar,
-        online: userData.online === "true",
+        email: userData.email || "",
+        name: userData.displayName || userData.name || "",
+        avatar: userData.photoURL || userData.avatar || "",
+        online: userData.online || false,
         lastActive,
         messageCount,
         authProvider: userData.authProvider || "email",
       })
     }
-  }
 
-  return users
+    return users
+  } catch (error) {
+    console.error("Error getting users with stats:", error)
+    return []
+  }
 }
 
 export async function getUserActivityData() {
-  const redis = getRedisClient()
+  try {
+    const now = Date.now()
+    const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000
 
-  const userIds = await redis.smembers("users")
-  const now = Date.now()
-  const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000
+    // Activity by day of week (0 = Sunday, 6 = Saturday)
+    const activityByDay = [0, 0, 0, 0, 0, 0, 0]
 
-  // Activity by day of week (0 = Sunday, 6 = Saturday)
-  const activityByDay = [0, 0, 0, 0, 0, 0, 0]
+    // Activity by hour (0-23)
+    const activityByHour = Array(24).fill(0)
 
-  // Activity by hour (0-23)
-  const activityByHour = Array(24).fill(0)
+    // Get all messages from the last week
+    const messagesRef = collection(db, "messages")
+    const messagesSnapshot = await getDocs(messagesRef)
 
-  for (const userId of userIds) {
-    const messageKeys = await redis.keys(`conversation:${userId}:*`)
+    messagesSnapshot.forEach((messageDoc) => {
+      const messageData = messageDoc.data()
+      if (messageData.timestamp) {
+        const timestamp = messageData.timestamp instanceof Timestamp ?
+          messageData.timestamp.toMillis() :
+          Number(messageData.timestamp)
 
-    for (const key of messageKeys) {
-      const messages = await redis.zrangebyscore(key, oneWeekAgo, now)
-
-      for (const messageId of messages) {
-        const messageData = await redis.hgetall(`message:${messageId}`)
-        if (messageData && messageData.timestamp) {
-          const timestamp = Number.parseInt(messageData.timestamp)
+        if (timestamp > oneWeekAgo) {
           const date = new Date(timestamp)
           const day = date.getDay()
           const hour = date.getHours()
@@ -172,11 +166,17 @@ export async function getUserActivityData() {
           activityByHour[hour]++
         }
       }
-    }
-  }
+    })
 
-  return {
-    activityByDay,
-    activityByHour,
+    return {
+      activityByDay,
+      activityByHour,
+    }
+  } catch (error) {
+    console.error("Error getting user activity data:", error)
+    return {
+      activityByDay: [0, 0, 0, 0, 0, 0, 0],
+      activityByHour: Array(24).fill(0),
+    }
   }
 }

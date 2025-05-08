@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { loginUser } from "@/lib/auth"
+import { useAuth } from "@/contexts/auth-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,15 +15,24 @@ export function LoginForm() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
+  const { signIn, signInWithGoogle, user } = useAuth()
 
-  async function handleSubmit(formData: FormData) {
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
     setIsLoading(true)
     setError(null)
 
+    const formData = new FormData(e.currentTarget)
+    const email = formData.get("email") as string
+    const password = formData.get("password") as string
+
     try {
-      await loginUser(formData)
-      router.refresh()
+      console.log("Attempting login with:", email) // Don't log password
+      await signIn(email, password)
+      router.push("/")
     } catch (err) {
+      console.error("Login error:", err)
       setError(err instanceof Error ? err.message : "Failed to login")
     } finally {
       setIsLoading(false)
@@ -31,8 +40,17 @@ export function LoginForm() {
   }
 
   async function handleGoogleLogin() {
-    // In a real app, this would redirect to Google OAuth
-    alert("Google login would be implemented here")
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      await signInWithGoogle()
+      console.log(user)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to login with Google")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -41,7 +59,7 @@ export function LoginForm() {
         <CardTitle className="text-2xl text-center">Welcome to Krush</CardTitle>
         <CardDescription className="text-center">Log in to your account to start messaging</CardDescription>
       </CardHeader>
-      <form action={handleSubmit}>
+      <form onSubmit={handleSubmit}>
         <CardContent>
           <div className="grid w-full items-center gap-4">
             <div className="flex flex-col space-y-1.5">

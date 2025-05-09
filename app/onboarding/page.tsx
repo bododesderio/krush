@@ -14,7 +14,7 @@ export default function OnboardingPage() {
 
   const handleContactPermission = async () => {
     setIsLoading(true)
-
+    
     try {
       // Request contact permission
       if ("contacts" in navigator && "ContactsManager" in window) {
